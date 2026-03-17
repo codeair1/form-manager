@@ -1,28 +1,43 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { useState } from "react";
+import axios from "axios";
 
 function App() {
-  const [message, setMessage] = useState('Loading...');
+  const [file, setFile] = useState(null);
+  const [boxes, setBoxes] = useState([]); 
 
-  useEffect(() => {
-    axios.get('http://localhost:8000/api/health')
-      .then(res => setMessage(res.data.message))
-      .catch(err => setMessage('Backend not connected'));
-  }, []);
+  const handleUpload = async () => {
+    const formData = new FormData();
+    formData.append("image", file);
+
+    try {
+      const res = await axios.post("/api/omr", formData);
+
+      setBoxes(res.data.boxes); 
+
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   return (
-    <div style={{
-      maxWidth: '800px',
-      margin: '50px auto',
-      padding: '20px',
-      fontFamily: 'system-ui'
-    }}>
-      <h1 style={{ color: '#3776ab' }}>this is a test</h1>
-      <div style={{ marginTop: '15px', color: '#666' }}>
-        <p>Frontend: React running on port 3000</p>
-        <p>Backend: Python + Flask running on port 8000</p>
-        <p>Database: PostgreSQL connected</p>
-      </div>
+    <div>
+      <h2>Upload Image</h2>
+
+      <input
+        type="file"
+        onChange={(e) => setFile(e.target.files[0])}
+      />
+
+      <button onClick={handleUpload}>Upload</button>
+
+      <hr />
+
+      <h3>OMR Output:</h3>
+      {boxes.map((box, index) => (
+        <p key={index}>
+          Box {index + 1}: {box.checked ? "✅ Checked" : "❌ Empty"}
+        </p>
+      ))}
     </div>
   );
 }
