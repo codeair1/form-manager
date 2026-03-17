@@ -1,9 +1,3 @@
-# React + Python Flask + PostgreSQL Template
-
-A fullstack application with Python backend and React frontend.
-
-## Tech Stack
-
 ### Frontend
 - **React 18** - Modern UI library
 - **Axios** - HTTP client for API calls
@@ -27,14 +21,3 @@ A fullstack application with Python backend and React frontend.
 - CRUD operations for items
 - Database connection with psycopg2
 - Hot reload for development
-- Dockerized environment
-
-## API Endpoints
-
-- `GET /api/health` - Check if backend is running
-- `GET /api/items` - Get all items
-- `POST /api/items` - Create a new item (send `{ "name": "item name" }`)
-
-## Environment
-
-All services run in isolated Docker containers and communicate through a Docker network.
