@@ -1,8 +1,6 @@
-
-
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase import pdfmetrics  # <--- THIS IS THE MISSING PIECE
+from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import os
 
@@ -14,15 +12,14 @@ def create_omr(filename, data, font_path, form_name):
     width, height = A4
     left_margin = 50
     right_margin = width - 50
-    center_x = width / 2
     max_content_width = right_margin - left_margin
 
     # --- Header ---
     c.setFont(font_name_tag, 18)
-    c.drawCentredString(center_x, height - 40, form_name.upper())
+    c.drawCentredString(width/2, height - 40, form_name.upper())
     c.setFont(font_name_tag, 10)
-    c.drawString(left_margin, height - 70, f"Name: {'_'*30}")
-    c.drawString(left_margin, height - 90, f"Roll No: {'_'*25}")
+    c.drawString(left_margin, height - 70, f"Name: {'_'*35}")
+    c.drawString(left_margin, height - 90, f"Roll No: {'_'*30}")
     c.drawRightString(right_margin, height - 70, "Date: ____/____/2026")
     c.drawRightString(right_margin, height - 90, "Section: _________")
     c.line(left_margin, height - 105, right_margin, height - 105)
@@ -31,11 +28,11 @@ def create_omr(filename, data, font_path, form_name):
 
     for idx, item in enumerate(data, start=1):
         # Page Overflow Check
-        if y_pos < 150:
+        if y_pos < 100:
             c.showPage()
             y_pos = height - 60
 
-        # --- 1. Question Wrapping (Strict) ---
+        # --- 1. Question Wrapping (Left Aligned) ---
         c.setFont(font_name_tag, 11)
         full_q = f"{idx}. {item['question']}"
         words = full_q.split(' ')
@@ -48,68 +45,67 @@ def create_omr(filename, data, font_path, form_name):
                 y_pos -= 15
                 line = "   " + word + " "
         c.drawString(left_margin, y_pos, line.strip())
-        y_pos -= 30 
+        y_pos -= 20 
 
-        # --- 2. Options "Flow" with Character-Level Wrapping ---
+        # --- 2. Options Logic (Left Aligned) ---
         c.setFont(font_name_tag, 9)
-        padding = 30
+        option_gap = 25  # Space between options in the same row
+        bubble_size = 5
+        text_offset = 12 # Distance from bubble center to text start
+        
+        # We group options into rows that fit within the page width
         rows = [[]]
         curr_row_w = 0
 
         for opt in item['options']:
-            # Handle empty or None options
             text_to_wrap = opt if (opt and opt.strip()) else " "
             opt_lines = []
             remaining_text = text_to_wrap
             
-            # Character-level wrapping
+            # Character-level wrapping for very long options (limited to 140px wide)
+            max_opt_width = 140 
             while remaining_text:
                 char_count = 0
                 while char_count < len(remaining_text) and \
-                      pdfmetrics.stringWidth(remaining_text[:char_count+1], font_name_tag, 9) < 150:
+                      pdfmetrics.stringWidth(remaining_text[:char_count+1], font_name_tag, 9) < max_opt_width:
                     char_count += 1
-                
                 if char_count == 0: char_count = 1 
                 opt_lines.append(remaining_text[:char_count])
                 remaining_text = remaining_text[char_count:]
 
-            # Safe max width calculation
-            widths = [pdfmetrics.stringWidth(line, font_name_tag, 9) for line in opt_lines]
+            widths = [pdfmetrics.stringWidth(l, font_name_tag, 9) for l in opt_lines]
             block_w = max(widths) if widths else 20
-            
-            # Row assignment
-            if curr_row_w + block_w + padding > max_content_width:
-                rows.append([{"lines": opt_lines, "width": block_w}])
-                curr_row_w = block_w + padding
-            else:
-                rows[-1].append({"lines": opt_lines, "width": block_w})
-                curr_row_w += block_w + padding
+            # Total width of one option = Bubble + Space + Text Width
+            total_opt_w = (bubble_size * 2) + text_offset + block_w
 
-        # --- 3. Draw the Options ---
+            if curr_row_w + total_opt_w + option_gap > max_content_width:
+                rows.append([{"lines": opt_lines, "width": total_opt_w, "text_w": block_w}])
+                curr_row_w = total_opt_w + option_gap
+            else:
+                rows[-1].append({"lines": opt_lines, "width": total_opt_w, "text_w": block_w})
+                curr_row_w += total_opt_w + option_gap
+
+        # --- 3. Draw the Options (Left Aligned) ---
         for row in rows:
-            row_total_w = sum(b['width'] for b in row) + (padding * (len(row) - 1))
-            start_x = (width - row_total_w) / 2
-            
-            draw_x = start_x
+            draw_x = left_margin + 15 # Slight indent for options
             max_lines_in_row = max(len(b['lines']) for b in row)
 
             for block in row:
-                bubble_x = draw_x + (block['width'] / 2)
+                # Draw Bubble
+                bubble_center_x = draw_x + bubble_size
+                c.circle(bubble_center_x, y_pos, bubble_size, stroke=1, fill=0)
                 
-                # Bubble position stays at the top of the text block
-                c.circle(bubble_x, y_pos, 5, stroke=1, fill=0)
-                
-                # Draw each line of the wrapped option
-                line_y = y_pos - 15
+                # Draw Wrapped Text next to bubble
+                line_y = y_pos - 3 # Align text vertically with bubble
                 for line_text in block['lines']:
-                    c.drawCentredString(bubble_x, line_y, line_text)
-                    line_y -= 12 # Move down for the next line of text
+                    c.drawString(bubble_center_x + text_offset, line_y, line_text)
+                    line_y -= 12 
                 
-                draw_x += block['width'] + padding
+                draw_x += block['width'] + option_gap
             
-            # Adjust y_pos based on how many lines were used in the tallest block
-            y_pos -= (30 + (max_lines_in_row * 12))
+            # Move Y down based on tallest option in the row
+            y_pos -= (max_lines_in_row * 12) + 10
 
-        y_pos -= 30
+        y_pos -= 15 # Space between questions
 
     c.save()

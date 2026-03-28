@@ -1,12 +1,15 @@
 from flask import Flask, jsonify, request, render_template, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Table, Column, Integer, String, MetaData, insert
+from sqlalchemy import Table, Column, Integer, String, MetaData, insert, inspect
 import os
 import requests
 
+
+
+
 from form_generator.generator_form import create_omr
-from process_omr import process_omr_pdf
+from process_omr import process_omr
 
 app = Flask(__name__)
 CORS(app)
@@ -67,7 +70,7 @@ def create_item():
     db.session.commit()
     return jsonify({'id': new_item.test, 'name': new_item.name})
 
-# --- 4. Dynamic Route (New Form & Table Creation) ---
+
 @app.route('/new_form', methods=['POST'])
 def new_form():
     try:
@@ -77,8 +80,7 @@ def new_form():
 
         # Sanitize Table Name
         safe_table_name = "".join([c for c in form_name if c.isalnum() or c == '_']).lower().rstrip()
-        table_name = f"{safe_table_name}_table"
-
+        table_name = f"{safe_table_name}_responses"
         # Dynamically Create Table using SQLAlchemy Core
         # This keeps it separate from the Item model but within the same DB
         new_table = Table(
@@ -90,10 +92,11 @@ def new_form():
             extend_existing=True
         )
         
+
         db.metadata.create_all(db.engine)
 
         # PDF Generation Logic
-        font_pth = r'C:\College\cep\HackStack\my-project\form_generator\fonts\NotoSans-Italic-VariableFont_wdth,wght.ttf'
+        font_pth = r'C:\College\cep\HackStack\my-project\form_generator\fonts\NotoSans-VariableFont_wdth,wght.ttf'
         output_dir = os.path.join(os.getcwd(), 'forms')
         
         if not os.path.exists(output_dir):
@@ -111,26 +114,63 @@ def new_form():
         return jsonify({"error": str(e)}), 500
 
 
-
+# --- 4. Dynamic Route (New Form & Table Creation) ---
 @app.route('/api/upload', methods=['POST'])
 def upload():
+    # 1. ONLY check for the image file
     file = request.files.get('image')
-    if file:
-        temp_path = "temp_omr.png"
-        file.save(temp_path)
+    
+    if not file:
+        return jsonify({"error": "No image file received"}), 400
+
+    # Save temp file
+    temp_path = os.path.join(os.getcwd(), f"temp_{file.filename}")
+    file.save(temp_path)
+
+    try:
+        from process_omr import process_omr
+        # 2. Run the OMR. It will detect the title (form_identity) itself
+        scan_data = process_omr(temp_path)
+        print(scan_data)
+        if "error" in scan_data:
+            return jsonify({"error": scan_data["error"]}), 400
+
+        # 3. Use the name DETECTED by the OCR script
+        raw_identity = scan_data.get('form_identity')
+        target_table_name = f"{raw_identity}_responses"
+
+        # 4. Check if the table exists
+        inspector = db.inspect(db.engine)
+        if target_table_name not in inspector.get_table_names():
+            return jsonify({
+                "error": f"Table '{target_table_name}' does not exist.",
+                "detected_as": raw_identity
+            }), 404
+
+        # ... Insert logic ...
+
+        metadata = MetaData()
+        # Load the table structure from the database automatically
+        target_table = Table(target_table_name, metadata, autoload_with=db.engine)
+
+        # 6. Prepare the data for insertion
+        # This matches the column names you created in your 'new_form' route
+        stmt = insert(target_table).values(
+            student_name=scan_data.get('student_name', 'Unknown'),
+            roll_no=scan_data.get('roll_no', 'Unknown'),
+            responses=scan_data.get('responses', {})  # This will be stored as JSON
+        )
+
+        # 7. Execute and Commit
+        db.session.execute(stmt)
+        db.session.commit()
         
-        try:
-            # This import is fine as long as process_omr.py 
-            # doesn't try to import 'app' back!
-            from process_omr import process_omr_pdf
-            
-            # Run the logic
-            results = process_omr_pdf(temp_path)
-            
-            return jsonify({"status": "success", "data": results})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-    return jsonify({"error": "No file uploaded"}), 400
+        return jsonify({"status": "success", "data": scan_data})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(temp_path): os.remove(temp_path)
 
 
 @app.route('/')
