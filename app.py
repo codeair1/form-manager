@@ -3,10 +3,12 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Table, Column, Integer, String, MetaData, insert, inspect
 import os
+import json
 import requests
+from dotenv import load_dotenv
 
-
-
+# Load sensitive keys from .env
+load_dotenv()
 
 from form_generator.generator_form import create_omr
 from process_omr import process_omr
@@ -15,8 +17,8 @@ app = Flask(__name__)
 CORS(app)
 
 # --- 1. Database Configuration (Consolidated) ---
-# Replace with your actual password
-app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:password@localhost:5432/test'
+# Fetched from your .env file
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'postgresql://postgres:password@localhost:5432/test')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -86,8 +88,10 @@ def new_form():
         new_table = Table(
             table_name, db.metadata,
             Column('id', Integer, primary_key=True),
-            Column('student_name', String(255)),
-            Column('roll_no', String(100)),
+            Column('Full_name', String(255)),
+            Column('Age', String(100)),
+            Column('Contact_Number', String(20)),
+            Column('Gender', String(20)),
             Column('responses', db.JSON),
             extend_existing=True
         )
@@ -96,7 +100,7 @@ def new_form():
         db.metadata.create_all(db.engine)
 
         # PDF Generation Logic
-        font_pth = r'C:\College\cep\HackStack\my-project\form_generator\fonts\NotoSans-VariableFont_wdth,wght.ttf'
+        font_pth = r'E:\ngo\form-manager\form_generator\fonts\NotoSans-VariableFont_wdth,wght.ttf'
         output_dir = os.path.join(os.getcwd(), 'forms')
         
         if not os.path.exists(output_dir):
@@ -117,61 +121,155 @@ def new_form():
 # --- 4. Dynamic Route (New Form & Table Creation) ---
 @app.route('/api/upload', methods=['POST'])
 def upload():
-    # 1. ONLY check for the image file
-    file = request.files.get('image')
-    
-    if not file:
-        return jsonify({"error": "No image file received"}), 400
+    files = request.files.getlist('images')
 
-    # Save temp file
-    temp_path = os.path.join(os.getcwd(), f"temp_{file.filename}")
-    file.save(temp_path)
+    if not files:
+        return jsonify({"error": "No image files received"}), 400
 
-    try:
-        from process_omr import process_omr
-        # 2. Run the OMR. It will detect the title (form_identity) itself
-        scan_data = process_omr(temp_path)
-        print(scan_data)
-        if "error" in scan_data:
-            return jsonify({"error": scan_data["error"]}), 400
+    from collections import defaultdict
+    from process_omr import process_omr
 
-        # 3. Use the name DETECTED by the OCR script
-        raw_identity = scan_data.get('form_identity')
-        target_table_name = f"{raw_identity}_responses"
+    subfolder_map = defaultdict(list)
+    all_temp_paths = []  # track all temp files for cleanup
 
-        # 4. Check if the table exists
-        inspector = db.inspect(db.engine)
-        if target_table_name not in inspector.get_table_names():
-            return jsonify({
-                "error": f"Table '{target_table_name}' does not exist.",
-                "detected_as": raw_identity
-            }), 404
+    # ── Step 1: Save ALL files to disk immediately ──────────────────────────
+    for file in files:
+        print(f"[DEBUG] received filename: {file.filename}")
+        if "__" in file.filename:
+            folder_name, real_name = file.filename.split("__", 1)
+        else:
+            folder_name = "__root__"
+            real_name = file.filename
 
-        # ... Insert logic ...
-
-        metadata = MetaData()
-        # Load the table structure from the database automatically
-        target_table = Table(target_table_name, metadata, autoload_with=db.engine)
-
-        # 6. Prepare the data for insertion
-        # This matches the column names you created in your 'new_form' route
-        stmt = insert(target_table).values(
-            student_name=scan_data.get('student_name', 'Unknown'),
-            roll_no=scan_data.get('roll_no', 'Unknown'),
-            responses=scan_data.get('responses', {})  # This will be stored as JSON
+        temp_path = os.path.normpath(
+            os.path.join(os.getcwd(), f"temp_{folder_name}_{real_name}")
         )
+        file.save(temp_path)
+        size = os.path.getsize(temp_path)
+        print(f"[DEBUG] saved → {temp_path} ({size} bytes)")
 
-        # 7. Execute and Commit
-        db.session.execute(stmt)
-        db.session.commit()
-        
-        return jsonify({"status": "success", "data": scan_data})
+        subfolder_map[folder_name].append((temp_path, real_name))
+        all_temp_paths.append(temp_path)
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    print(f"[DEBUG] Subfolders: {list(subfolder_map.keys())}")
+    print(f"[DEBUG] Files per subfolder: { {k: len(v) for k, v in subfolder_map.items()} }")
+
+    results = []
+    errors = []
+
+    # ── Step 2: Process each subfolder ─────────────────────────────────────
+    try:
+        for folder_name, folder_entries in subfolder_map.items():
+
+            # Sort by filename so page1 always comes before page2
+            folder_entries.sort(key=lambda x: x[1])
+            print(f"[{folder_name}] Processing {len(folder_entries)} image(s): {[e[1] for e in folder_entries]}")
+
+            try:
+                # ── Page 1: identity + first set of responses ───────────────
+                first_image_path, _ = folder_entries[0]
+                scan_data = process_omr(first_image_path)
+                print(f"[{folder_name}] page1 scan_data: {scan_data}")
+
+                if "error" in scan_data:
+                    errors.append({"folder": folder_name, "error": scan_data["error"]})
+                    continue
+
+                raw_identity = scan_data.get('form_identity', '').replace("_", "")
+                target_table_name = f"{raw_identity}_responses"
+
+                inspector = db.inspect(db.engine)
+                if target_table_name not in inspector.get_table_names():
+                    errors.append({
+                        "folder": folder_name,
+                        "error": f"Table '{target_table_name}' does not exist.",
+                        "detected_as": raw_identity
+                    })
+                    continue
+
+                # ── Remaining pages: merge responses ────────────────────────
+                all_responses = dict(scan_data.get('responses', {}))
+
+                for page_idx, (temp_path, filename) in enumerate(folder_entries[1:], start=2):
+                    size = os.path.getsize(temp_path) if os.path.exists(temp_path) else 0
+                    print(f"[{folder_name}] page{page_idx} path={temp_path} | size={size} bytes")
+
+                    extra_data = process_omr(temp_path)
+                    print(f"[{folder_name}] page{page_idx} raw extra_data: {extra_data}")
+
+                    if "error" in extra_data:
+                        print(f"[{folder_name}] WARNING: OMR failed for {filename}: {extra_data['error']}")
+                        continue
+
+                    extra_responses = extra_data.get('responses', {})
+                    print(f"[{folder_name}] page{page_idx} responses count: {len(extra_responses)}")
+
+                    if not extra_responses:
+                        print(f"[{folder_name}] WARNING: page{page_idx} returned empty responses")
+                        continue
+
+                    # Prefix duplicate keys with page number
+                    for key, value in extra_responses.items():
+                        unique_key = key if key not in all_responses else f"[P{page_idx}] {key}"
+                        all_responses[unique_key] = value
+
+                    print(f"[{folder_name}] After merging page{page_idx}: {len(all_responses)} total responses")
+
+                print(f"[{folder_name}] Final responses ({len(all_responses)}): {list(all_responses.keys())}")
+
+                # ── Insert into DB ──────────────────────────────────────────
+                metadata = MetaData()
+                target_table = Table(target_table_name, metadata, autoload_with=db.engine, extend_existing=True)
+                table_columns = {col.name for col in target_table.columns}
+
+                row_data = {
+                    "Full_name":      scan_data.get("Full_name", "Unknown"),
+                    "Age":            scan_data.get("Age", "Unknown"),
+                    "Contact_Number": scan_data.get("Contact_Number", "Unknown"),
+                    "Gender":         scan_data.get("Gender", "Other"),
+                    "responses":      all_responses,
+                }
+                filtered_data = {k: v for k, v in row_data.items() if k in table_columns}
+
+                if not filtered_data:
+                    errors.append({
+                        "folder": folder_name,
+                        "error": "No matching columns found.",
+                        "table_columns": list(table_columns)
+                    })
+                    continue
+
+                stmt = insert(target_table).values(**filtered_data)
+                db.session.execute(stmt)
+                db.session.commit()
+
+                results.append({
+                    "folder":          folder_name,
+                    "status":          "success",
+                    "inserted_into":   target_table_name,
+                    "pages_processed": len(folder_entries),
+                    "total_responses": len(all_responses),
+                    "data":            {**scan_data, "responses": all_responses},
+                })
+
+            except Exception as e:
+                db.session.rollback()
+                errors.append({"folder": folder_name, "error": str(e)})
+
     finally:
-        if os.path.exists(temp_path): os.remove(temp_path)
+        # ── Step 3: Clean up ALL temp files once everything is done ─────────
+        for temp_path in all_temp_paths:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                print(f"[DEBUG] cleaned up {temp_path}")
 
+    return jsonify({
+        "total_folders": len(subfolder_map),
+        "successful":    len(results),
+        "failed":        len(errors),
+        "results":       results,
+        "errors":        errors,
+    }), 200
 
 @app.route('/')
 def home():

@@ -18,13 +18,21 @@ def create_omr(filename, data, font_path, form_name):
     c.setFont(font_name_tag, 18)
     c.drawCentredString(width/2, height - 40, form_name.upper())
     c.setFont(font_name_tag, 10)
-    c.drawString(left_margin, height - 70, f"Name: {'_'*35}")
-    c.drawString(left_margin, height - 90, f"Roll No: {'_'*30}")
-    c.drawRightString(right_margin, height - 70, "Date: ____/____/2026")
-    c.drawRightString(right_margin, height - 90, "Section: _________")
-    c.line(left_margin, height - 105, right_margin, height - 105)
+    c.drawString(left_margin, height - 70, f"Full Name: {'_'*76}")
+    c.drawString(left_margin, height - 90, f"Age: {'_'*10}")
+    c.drawRightString(right_margin, height - 70, "Date: ____/____/____")
+    c.drawString(left_margin, height - 110, "Gender:")
 
-    y_pos = height - 140 
+# Male option
+    c.circle(left_margin + 70, height - 107, 5)  # circle
+    c.drawString(left_margin + 80, height - 110, "Male")
+
+    # Female option
+    c.circle(left_margin + 140, height - 107, 5)
+    c.drawString(left_margin + 150, height - 110, "Female")
+    c.line(left_margin, height - 125, right_margin, height - 125)
+
+    y_pos = height - 155 
 
     for idx, item in enumerate(data, start=1):
         # Page Overflow Check

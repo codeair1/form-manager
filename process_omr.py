@@ -1,100 +1,146 @@
-import cv2
-import numpy as np
 import os
-import pytesseract
+import json
+import base64
+from mistralai.client import Mistral
+from dotenv import load_dotenv
 
-# CRITICAL: Point this to your actual Tesseract installation path
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+load_dotenv()
 
-def process_omr(file_path):
-    # 1. Load the Image
+MISTRAL_API_KEY = "PTi82vsaj9TxFt0nak1S8vkdzySII73B"
+
+MIME_MAP = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".pdf": "application/pdf",
+}
+
+
+def _encode_file(file_path: str) -> tuple[str, str]:
     ext = os.path.splitext(file_path)[1].lower()
-    if ext == '.pdf':
-        from pdf2image import convert_from_path
-        pages = convert_from_path(file_path, dpi=300)
-        img = np.array(pages[0])
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    else:
-        img = cv2.imread(file_path)
+    mime_type = MIME_MAP.get(ext)
+    if not mime_type:
+        raise ValueError(f"Unsupported file type: {ext}")
+    with open(file_path, "rb") as f:
+        data = base64.b64encode(f.read()).decode("utf-8")
+    return data, mime_type
 
-    if img is None: 
-        return {"error": "Failed to load image. Check the file path."}
 
-    # 2. Define 'gray' IMMEDIATELY after loading
-    # This ensures it exists for the rest of the function scope
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+def process_omr(file_path: str) -> dict:
+    if not MISTRAL_API_KEY:
+        return {"error": "MISTRAL_API_KEY is not set."}
 
-    # 3. Detect Form Identity (Title at the very top)
-    title_crop = gray[0:100, 0:img.shape[1]]
-    detected_title = pytesseract.image_to_string(title_crop).strip()
-    form_identity = "".join([c for c in detected_title if c.isalnum() or c == '_']).lower().split('\n')[0]
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}"}
 
-    if not form_identity:
-        form_identity = "unknown_form"
+    try:
+        b64_data, mime_type = _encode_file(file_path)
+    except ValueError as e:
+        return {"error": str(e)}
 
-    # 4. Detect Student Info (Name/Roll No)
-    header_crop = gray[150:450, 0:img.shape[1]] 
-    header_text = pytesseract.image_to_string(header_crop)
-    
-    student_name = "Unknown"
-    roll_no = "Unknown"
-    for line in header_text.split('\n'):
-        if "Name" in line:
-            student_name = line.split(':')[-1].replace('_', '').strip()
-        if "Roll" in line:
-            roll_no = line.split(':')[-1].replace('_', '').strip()
+    client = Mistral(api_key=MISTRAL_API_KEY)
 
-    # 5. Detect Circles
-    circles = cv2.HoughCircles(
-        blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=30,
-        param1=50, param2=30, minRadius=15, maxRadius=25
-    )
+    # ── Step 1: OCR ─────────────────────────────────────────────────────────
+    try:
+        data_uri = f"data:{mime_type};base64,{b64_data}"
+        ocr_response = client.ocr.process(
+            model="mistral-ocr-latest",
+            document={
+                "type": "document_url",
+                "document_url": data_uri,
+            },
+        )
+        ocr_text = "\n\n".join(page.markdown for page in ocr_response.pages)
+    except Exception as e:
+        return {"error": f"Mistral OCR failed: {e}"}
 
-    if circles is None:
-        return {"error": "No OMR bubbles detected on the page."}
+    if not ocr_text.strip():
+        return {"error": "Mistral OCR returned empty text."}
 
-    circles = np.round(circles[0, :]).astype("int")
-    circles = circles[circles[:, 1].argsort()]
-    
-    # 6. Group into Rows
-    rows = []
-    current_row = [circles[0]]
-    for i in range(1, len(circles)):
-        if abs(circles[i][1] - current_row[-1][1]) < 25:
-            current_row.append(circles[i])
-        else:
-            current_row.sort(key=lambda x: x[0])
-            rows.append(current_row)
-            current_row = [circles[i]]
-    rows.append(current_row)
+    print(f"[OCR DEBUG] file={file_path}")
+    print(f"[OCR DEBUG] ocr_text=\n{ocr_text}")
+    print(f"[OCR DEBUG] --- end ocr text ---")
 
-    # 7. Process Answers
-    final_responses = {}
-    options_map = ["A", "B", "C", "D", "E"]
+    # ── Step 2: Chat ─────────────────────────────────────────────────────────
+    parse_prompt = f"""You are an OMR (Optical Mark Recognition) data extraction specialist.
+Your ONLY job is to extract ALL marked bubble responses and personal details from OCR text.
 
-    for idx, row in enumerate(rows):
-        # OCR Question Number
-        bx, by, br = row[0]
-        q_crop = gray[max(0, by-40):by+40, max(0, bx-160):bx-br-5]
-        q_text = pytesseract.image_to_string(q_crop, config=r'--oem 3 --psm 6 digits').strip()
-        q_num = "".join(filter(str.isdigit, q_text)) or str(idx + 1)
+### BUBBLE MARKING RULES:
+- ☑ or ✓ = this bubble IS marked = selected answer
+- ☐ or □ = this bubble is NOT marked = not selected
+- For each question, find which bubble is marked (☑) and record its option number:
+  * First option (A or Good or Yes etc.) = 1
+  * Second option (B or Average or No etc.) = 2  
+  * Third option (C or Bad etc.) = 3
+  * Fourth option (D) = 4
 
-        # Detect marked bubble
-        pixel_counts = []
-        for (x, y, r) in row:
-            mask = np.zeros(thresh.shape, dtype="uint8")
-            cv2.circle(mask, (x, y), r - 2, 255, -1)
-            total = cv2.countNonZero(cv2.bitwise_and(thresh, thresh, mask=mask))
-            pixel_counts.append(total)
+### QUESTION KEY RULES:
+- If the question has descriptive text → use that text as the key
+  Example: "1. How was the service?" → key = "How was the service?"
+- If the question has NO text, just a number → use "Question N"
+  Example: "2." with options A B C D → key = "Question 2"
+- Number-only continuation pages like "12. ☐ A ☐ B ☐ C ☑ D" → key = "Question 12"
 
-        marked_idx = np.argmax(pixel_counts)
-        final_responses[q_num] = options_map[marked_idx] if marked_idx < len(options_map) else "N/A"
+### CRITICAL INSTRUCTIONS:
+1. Extract EVERY question that appears in the OCR text — do NOT skip any
+2. If a question has no bubble marked (all ☐), skip it
+3. The form title is the largest heading (# Title) — extract it lowercase with underscores
+4. If NO title exists on this page, use "unknown" for form_identity
+5. Personal details (Full_name, Age, Contact_Number, Gender) may not appear on continuation pages — use "Unknown" for missing fields
+6. YOU MUST EXTRACT ALL QUESTIONS — if you see 11 questions, return 11 responses; if 7, return 7
 
+### OCR TEXT:
+{ocr_text}
+
+### OUTPUT — return ONLY this JSON, no markdown, no explanation:
+{{
+  "form_identity": "title_here_or_unknown",
+  "Full_name": "name_or_Unknown",
+  "Age": "age_or_Unknown",
+  "Contact_Number": "number_or_Unknown",
+  "Gender": "Male_or_Female_or_Other_or_Unknown",
+  "responses": {{
+    "How was the service?": 1,
+    "Question 2": 3,
+    "Question 12": 4
+  }}
+}}"""
+
+    try:
+        chat_response = client.chat.complete(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": parse_prompt}],
+            temperature=0.0,  # ✅ 0 not 0.1 — deterministic, no hallucination
+        )
+        raw_text = chat_response.choices[0].message.content
+    except Exception as e:
+        return {"error": f"Mistral Chat parsing failed: {e}"}
+
+    # ── Clean and parse JSON ─────────────────────────────────────────────────
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {
+            "error": "Mistral returned invalid JSON",
+            "raw_ocr": ocr_text,
+            "raw_response": raw_text,
+        }
+
+    # ── Normalize and return ─────────────────────────────────────────────────
     return {
-        "form_identity": form_identity,
-        "student_name": student_name,
-        "roll_no": roll_no,
-        "responses": final_responses
+        "form_identity": result.get("form_identity", "unknown"),
+        "Full_name":     result.get("Full_name", "Unknown"),
+        "Age":           result.get("Age", "Unknown"),
+        "Contact_Number":result.get("Contact_Number", "Unknown"),
+        "Gender":        result.get("Gender", "Unknown"),
+        "responses":     result.get("responses", {}),
     }

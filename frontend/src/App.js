@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 function App() {
   const [view, setView] = useState('home');
   const [formName, setFormName] = useState('');
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [scanResult, setScanResult] = useState(null);
   const [data, setData] = useState([
     { question: "How was the service?", options: ["Good", "Average", "Bad"] }
@@ -21,7 +21,7 @@ function App() {
 
   const addQuestion = () => setData([...data, { question: "", options: ["A", "B", "C", "D"] }]);
   const removeQuestion = (qIndex) => setData(data.filter((_, index) => index !== qIndex));
-  
+
   const updateQuestion = (index, value) => {
     const newData = [...data];
     newData[index].question = value;
@@ -64,6 +64,8 @@ function App() {
         a.href = url;
         a.download = `${formName.replace(/\s+/g, '_')}.pdf`;
         a.click();
+      } else {
+        alert("Failed to generate PDF.");
       }
     } catch (error) {
       alert("Connection error.");
@@ -74,21 +76,30 @@ function App() {
 
   // --- API: Scan OMR ---
   const handleUpload = async () => {
-    if (!selectedFile) return alert("Please select an image file first.");
+    if (!selectedFiles.length) return alert("Please select at least one image file.");
     setLoading(true);
+  
     const formData = new FormData();
-    formData.append('image', selectedFile);
-
+  
+    selectedFiles.forEach(file => {
+      const parts = file.webkitRelativePath.replace("\\", "/").split("/");
+      const subFolder = parts.length >= 3 ? parts[parts.length - 2] : "root";
+      const encodedName = `${subFolder}__${file.name}`;  // e.g. "1__page1.jpg"
+      // ✅ Rename the file by creating a new File object with the encoded name
+      const renamedFile = new File([file], encodedName, { type: file.type });
+      formData.append('images', renamedFile);
+      console.log(`Appending: ${encodedName}`);
+    });
+  
     try {
       const response = await fetch('http://localhost:8000/api/upload', {
         method: 'POST',
         body: formData,
       });
-
       const result = await response.json();
       if (response.ok) {
-        setScanResult(result.data);
-        alert("Upload and Scan Successful!");
+        setScanResult(result.results?.[0]?.data || null);
+        alert(`Upload Successful! ${result.successful}/${result.total_folders} folder(s) processed.`);
       } else {
         alert("Server Error: " + (result.error || result.message));
       }
@@ -117,23 +128,60 @@ function App() {
     return (
       <div style={{ padding: '40px', fontFamily: 'Arial', minHeight: '100vh', backgroundColor: '#f4f4f9' }}>
         <div style={{ maxWidth: '600px', margin: 'auto', backgroundColor: 'white', padding: '30px', borderRadius: '8px', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-          <button onClick={() => {setView('home'); setScanResult(null);}} style={{ marginBottom: '20px' }}>← Back to Home</button>
+
+          <button onClick={() => { setView('home'); setScanResult(null); setSelectedFiles([]); }} style={{ marginBottom: '20px' }}>← Back to Home</button>
           <h2 style={{ textAlign: 'center' }}>OMR Scanner</h2>
+
           <div style={{ border: '2px dashed #ccc', padding: '20px', textAlign: 'center', margin: '20px 0' }}>
-            <input type="file" accept="image/*" onChange={(e) => setSelectedFile(e.target.files[0])} />
+            <input
+              type="file"
+              accept="image/*"
+              webkitdirectory=""
+              onChange={(e) => {
+                const imageFiles = Array.from(e.target.files).filter(file =>
+                  file.type.startsWith('image/')
+                );
+                // ✅ Attach relativePath directly onto each file object at selection time
+                imageFiles.forEach(file => {
+                  file._relativePath = file.webkitRelativePath || file.name;
+                });
+                setSelectedFiles(imageFiles);
+                // Debug
+                imageFiles.forEach(f => console.log(f.name, '|', f._relativePath));
+              }}
+            />
+            {selectedFiles.length > 0 && (
+              <p style={{ marginTop: '10px', color: '#555', fontSize: '0.85rem' }}>
+                {selectedFiles.length} image(s) across{' '}
+                <strong>
+                  {/* ✅ Fixed: split('/') on "parentfolder/subfolder/file.jpg"
+                      index -2 from end = subfolder name */}
+                  {new Set(
+                    selectedFiles
+                      .map(f => f.webkitRelativePath.split('/'))
+                      .filter(parts => parts.length >= 3)
+                      .map(parts => parts[parts.length - 2])  // ✅ immediate parent subfolder
+                  ).size}
+                </strong>{' '}
+                subfolder(s) detected
+              </p>
+            )}
           </div>
-          <button 
-            onClick={handleUpload} 
-            disabled={loading} 
+
+          <button
+            onClick={handleUpload}
+            disabled={loading}
             style={{ width: '100%', padding: '10px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
           >
             {loading ? "Processing..." : "Upload & Scan"}
           </button>
-          
+
           {scanResult && (
             <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#e9ecef', borderRadius: '5px' }}>
-              <h3>Results for: {scanResult.student_name}</h3>
-              <p><strong>Roll No:</strong> {scanResult.roll_no}</p>
+              <h3>Results for: {scanResult.Full_name}</h3>
+              <p><strong>Age:</strong> {scanResult.Age}</p>
+              <p><strong>Contact:</strong> {scanResult.Contact_Number}</p>
+              <p><strong>Gender:</strong> {scanResult.Gender}</p>
               <pre style={{ backgroundColor: '#fff', padding: '10px', borderRadius: '4px' }}>
                 {JSON.stringify(scanResult.responses, null, 2)}
               </pre>
@@ -160,8 +208,8 @@ function App() {
               <strong>Question {qIndex + 1}</strong>
               <button onClick={() => removeQuestion(qIndex)} style={{ color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>Delete</button>
             </div>
-            
-            <input 
+
+            <input
               placeholder="Enter your question text"
               value={q.question}
               onChange={(e) => updateQuestion(qIndex, e.target.value)}
@@ -170,7 +218,7 @@ function App() {
 
             <div style={{ marginLeft: '20px' }}>
               {q.options.map((opt, oIndex) => (
-                <input 
+                <input
                   key={oIndex}
                   placeholder={`Option ${String.fromCharCode(65 + oIndex)}`}
                   value={opt}
@@ -186,8 +234,8 @@ function App() {
 
         <div style={{ display: 'flex', gap: '10px' }}>
           <button onClick={addQuestion} style={{ flex: 1, padding: '12px' }}>Add Question</button>
-          <button 
-            onClick={handleSubmit} 
+          <button
+            onClick={handleSubmit}
             disabled={loading}
             style={{ flex: 1, padding: '12px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
           >

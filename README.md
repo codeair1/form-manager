@@ -1,7 +1,6 @@
 ### Frontend
 - **React 18** - Modern UI library
-- **Axios** - HTTP client for API calls
-- Runs on port **3000**
+
 
 ### Backend
 - **Python 3.11** - Programming language
