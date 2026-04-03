@@ -14,7 +14,12 @@ def create_omr(filename, data, font_path, form_name):
     right_margin = width - 50
     max_content_width = right_margin - left_margin
 
+        # --- Header ---
+    marker_size = 20
+    marker_size = 20
     # --- Header ---
+    c.setFillColorRGB(0, 0, 0)
+    c.rect(0, height - 20, marker_size, marker_size, fill=1)
     c.setFont(font_name_tag, 18)
     c.drawCentredString(width/2, height - 40, form_name.upper())
     c.setFont(font_name_tag, 10)
