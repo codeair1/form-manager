@@ -4,9 +4,10 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Table, Column, Integer, String, MetaData, insert, inspect
 import os
 import requests
+from dotenv import load_dotenv
 
-
-
+# Load sensitive keys from .env
+load_dotenv()
 
 from form_generator.generator_form import create_omr
 from process_omr import process_omr
@@ -15,8 +16,8 @@ app = Flask(__name__)
 CORS(app)
 
 # --- 1. Database Configuration (Consolidated) ---
-# Replace with your actual password
-app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:password@localhost:5432/test'
+# Fetched from your .env file
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'postgresql://postgres:password@localhost:5432/test')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -96,7 +97,7 @@ def new_form():
         db.metadata.create_all(db.engine)
 
         # PDF Generation Logic
-        font_pth = r'C:\College\cep\HackStack\my-project\form_generator\fonts\NotoSans-VariableFont_wdth,wght.ttf'
+        font_pth = r'E:\ngo\form-manager\form_generator\fonts\NotoSans-VariableFont_wdth,wght.ttf'
         output_dir = os.path.join(os.getcwd(), 'forms')
         
         if not os.path.exists(output_dir):
@@ -137,6 +138,7 @@ def upload():
 
         # 3. Use the name DETECTED by the OCR script
         raw_identity = scan_data.get('form_identity')
+        raw_identity = raw_identity.replace("_", "")
         target_table_name = f"{raw_identity}_responses"
 
         # 4. Check if the table exists
