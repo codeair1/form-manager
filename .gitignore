@@ -1,0 +1,5 @@
+/frontend/node_modules/
+.env
+venv/
+google_credentials.json
+node_modules/
