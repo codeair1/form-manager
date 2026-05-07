@@ -1,9 +1,13 @@
 # OMR Form Manager
 
+Double Click on Form_Manager.bat to run application.
+
+
 **Technical Documentation**
 `v1.0  |  Flask + React + PostgreSQL + Google Sheets`
 
 ---
+
 
 ## Overview
 
